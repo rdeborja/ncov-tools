@@ -24,7 +24,7 @@ def get_variants_pattern():
 def get_metadata_file(wildcards):
     return config.get("metadata", "").format(data_root=config["data_root"])
 
-def get_run_name():
+def get_run_name(wildcards=None):
     return config.get("run_name", "default")
 
 def get_sample_names():
@@ -50,6 +50,24 @@ def get_sample_names():
 
     # remove any possible duplicates
     return list(set(samples))
+
+def get_primer_bed(wildcards):
+    '''
+    Get the path to the BED file containing amplicon primers.
+    '''
+    return config.get("primer_bed", "")
+
+def get_primer_offset(wildcards):
+    '''
+    Get the number of bases to offset the primer when removing primers from amplicon BED
+    '''
+    return config.get("primer_offset", "0")
+
+def get_primer_bed_type_opt(wildcards):
+    '''
+    Get option bed_type from config.yaml
+    '''
+    return config.get("bed_type", "unique_amplicons")
 
 def get_negative_control_samples():
     if "negative_control_samples" in config:
@@ -225,13 +243,18 @@ rule all_qc_reports:
     input:
         get_qc_reports
 
+rule create_amplicon_bed:
+    input:
+        "bed/amplicon.bed"
+
 #
 # generate coverage QC data using bedtools
 #
 rule make_amplicon_mean_coverage:
     input:
         bam=get_bam_for_sample,
-        bed=get_amplicon_bed
+        #bed=get_amplicon_bed
+        bed="bed/amplicon.bed"
     output:
         "qc_sequencing/{sample}.mean_coverage.bed"
     params:
@@ -244,7 +267,8 @@ rule make_amplicon_mean_coverage:
 rule make_amplicon_coverage:
     input:
         bam=get_bam_for_sample,
-        bed=get_amplicon_bed
+        #bed=get_amplicon_bed
+        bed="bed/amplicon.bed"
     output:
         "qc_sequencing/{sample}.amplicon_coverage.bed"
     params:
@@ -257,7 +281,8 @@ rule make_amplicon_coverage:
 rule make_amplicon_depth:
     input:
         bam=get_bam_for_sample,
-        bed=get_amplicon_bed
+        #bed=get_amplicon_bed
+        bed="bed/amplicon.bed"
     output:
         "qc_sequencing/{sample}.amplicon_depth.bed"
     params:
@@ -270,7 +295,8 @@ rule make_amplicon_depth:
 rule make_amplicon_base_coverage:
     input:
         bam=get_bam_for_sample,
-        bed=get_amplicon_bed
+        #bed=get_amplicon_bed
+        bed="bed/amplicon.bed"
     output:
         "qc_sequencing/{sample}.amplicon_base_coverage.bed"
     params:
@@ -294,7 +320,7 @@ rule make_genome_per_base_coverage:
         bam=get_bam_for_sample,
         bed="bed/genome.bed"
     output:
-        "qc_sequencing/{sample}.per_base_coverage.bed"
+        "{directory}/{sample}.per_base_coverage.bed"
     params:
         memory_per_thread="2G"
     threads: 1
@@ -421,6 +447,17 @@ rule make_qc_plot_depth_by_position:
     shell:
         "Rscript {params.plot_script} depth_by_position {wildcards.prefix} {params.metadata}"
 
+rule make_qc_plot_depth_by_position_negative_controls:
+    input:
+        expand("qc_sequencing_negative_control/{s}.per_base_coverage.bed", s=get_negative_control_samples())
+    output:
+        "plots/{prefix}_depth_by_position_negative_control.pdf"
+    params:
+        plot_script = srcdir("plot_qc_sequencing.R"),
+        metadata=get_metadata_file
+    shell:
+        "Rscript {params.plot_script} negative_control_depth_by_position {wildcards.prefix} {params.metadata}"
+
 rule make_qc_plot_amplicon_depth_by_ct:
     input:
         files=expand("qc_sequencing/{s}.amplicon_depth.bed", s=get_sample_names()),
@@ -527,3 +564,40 @@ rule make_ambiguous_position_report:
         script=srcdir("ambiguous_position_check.py")
     shell:
         "python {params.script} --alleles {input.alleles} --min-count 3 > {output}"
+
+rule make_amplicon_bed:
+    input:
+        primers=get_primer_bed
+    output:
+        "bed/amplicon.bed"
+    params:
+        script="primers_to_amplicons.py",
+        offset=get_primer_offset,
+        bed_type_opt=get_primer_bed_type_opt
+    shell:
+        "{params.script} --primers {input.primers} --offset {params.offset} --bed_type {params.bed_type_opt} --output {output}"
+
+rule make_report_tex:
+    input:
+        get_qc_reports,
+        "plots/{prefix}_tree_snps.pdf",
+        "plots/{prefix}_depth_by_position_negative_control.pdf"
+    output:
+        "qc_reports/{prefix}.tex"
+    params:
+        script=srcdir("generate_report.py"),
+        run_name=get_run_name
+    shell:
+        "python {params.script} --run-name {params.run_name} > {output}"
+
+rule make_report_pdf:
+    input:
+        "qc_reports/{prefix}.tex"
+    output:
+        "qc_reports/{prefix}.pdf"
+    shell:
+        # The long table package needs pdflatex to be run up to 3 times
+        # to correctly typeset the tables
+        "pdflatex -output-directory qc_reports {input} &&"
+        "pdflatex -output-directory qc_reports {input} &&"
+        "pdflatex -output-directory qc_reports {input}"
