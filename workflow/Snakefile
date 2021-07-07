@@ -1,0 +1,18 @@
+import glob
+import os
+
+singularity: "docker://c3genomics/ncov-tools:latest"  # Set image to tagged version (not latest) in production
+
+include: "rules/common.smk"
+include: "rules/sequencing.smk"
+include: "rules/analysis.smk"
+include: "rules/annotation.smk"
+include: "rules/report.smk"
+
+rule all:
+    input:
+        get_qc_sequencing_plots,
+        get_qc_analysis_plots,
+        get_qc_reports,
+        get_recurrent_heatmap_plot,
+        get_primer_snp_depth_table

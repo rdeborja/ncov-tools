@@ -12,7 +12,7 @@ cd ncov-tools
 
 To use this package, install the dependencies using conda:
 ```
-conda env create -f environment.yml
+conda env create -f workflow/envs/environment.yml
 ```
 
 Alternatively, if install times are very slow using conda, we recommend using
@@ -26,16 +26,13 @@ conda install -c conda-forge mamba
 Then create the ncov-tools environment using mamba
 
 ```
-mamba env create -f environment.yml
+mamba env create -f workflow/envs/environment.yml
 ```
 
-Either way, if you used conda directly or mamba, activate the conda package and install the `parser` package:
+Either way, if you used conda directly or mamba, activate the conda package:
 
 ```
 conda activate ncov-qc
-cd parser
-pip install -r requirements.txt
-pip install .
 ```
 
 ## Required Configuration
@@ -52,7 +49,8 @@ As an example, let's say your data is laid out in the following structure:
      sampleB.consensus.fasta
    resources/
      artic_reference.fasta
-     artic_amplicons.bed
+     V3/
+        nCoV-2019.bed
 ```
 
 Then your config.yaml should look like:
@@ -64,9 +62,6 @@ data_root: run_200430
 # optionally the plots can have a "run name" prefix. If this is not defined the prefix will be "default"
 run_name: my_run
 
-# path to the file containing the amplicon regions (not the primer sites, the actual amplicons)
-amplicon_bed: resources/artic_amplicons.bed
-
 # path to the nCov reference genome
 reference_genome: resources/artic_reference.fasta
 
@@ -74,21 +69,8 @@ reference_genome: resources/artic_reference.fasta
 platform: "oxford-nanopore"
 
 # path to the BED file containing the primers, this should follow the format downloaded from
-# the ARTIC primer
-primer_bed: nCoV-2019.bed
-
-# list the type of amplicon BED file that will be created from the "primer_bed".  This can include:
-# full -- amplicons including primers and overlaps listed in the primer BED file
-# no_primers -- amplicons including overlaps but with primers removed
-# unique_amplicons -- distinct amplicons regions with primers and overlapping regions removed
-bed_type: unique_amplicons
-
-# offset for the amplicons and primers
-offset: 0
-
-# minimum completeness threshold for inclusion to the SNP tree plot, if no entry
-# is provided the default is set to 0.75
-completeness_threshold: 0.9
+# the ARTIC repository
+primer_bed: resources/V3/nCoV-2019.bed
 ```
 
 The pipeline is designed to work with the results of `ivar` (illumina) or the artic-ncov2019/fieldbioinformatics workflow (oxford nanopore). It will automatically detect the names of the output files (BAMs, consensus fasta, variants) from these workflows using the `platform` value. If you used a different workflow, you can set the following options to help the pipeline find your files:
@@ -115,7 +97,7 @@ Some plots and QC statistics can be augmented with metadata like the qPCR Ct val
 metadata: "/path/to/metadata.tsv"
 ```
 
-The expected metadata file is a sample TSV with up to three fields:
+The expected metadata file is a simple TSV with a `sample` field and optional `ct` and `date` fields. Other fields can be provided but will be ignored.
 
 ```
 sample   ct     date
@@ -142,10 +124,26 @@ negative_control_samples: [ "NTC-1", "NTC-2" ]
 #
 tree_include_consensus: some_genomes_from_gisaid.fasta
 
-#
-# set this flag to true to include lineage assignments with pangolin in the output plots
-#
-assign_lineages: true
+# list the type of amplicon BED file that will be created from the "primer_bed".  This can include:
+# full -- amplicons including primers and overlaps listed in the primer BED file
+# no_primers -- amplicons including overlaps but with primers removed
+# unique_amplicons -- distinct amplicons regions with primers and overlapping regions removed
+bed_type: unique_amplicons
+
+# minimum completeness threshold for inclusion to the SNP tree plot, if no entry
+# is provided the default is set to 0.75
+completeness_threshold: 0.9
+
+# the set of mutations to automatically flag in the QC reports
+# this can be the name of one of the watchlists built into ncov-watch
+# or the path to a local VCF file. 
+# Built in lists: https://github.com/jts/ncov-watch/tree/master/ncov_watch/watchlists
+mutation_set: spike_mutations
+
+# user specifiable output directory 
+# defaults to just current working directory but otherwise
+# will write output files to the specified directory
+output_directory: run1_output
 ```
 
 ## Running
@@ -154,14 +152,28 @@ After configuration, you can run the pipeline using Snakemake
 
 ```
 # Build the sequencing QC plots (coverage, allele frequencies)
-snakemake -s qc/Snakefile all_qc_sequencing
+snakemake -s workflow/Snakefile all_qc_sequencing
 
 # Build the analysis QC plots (tree with annotated mutations)
-snakemake -s qc/Snakefile all_qc_analysis
+snakemake -s workflow/Snakefile all_qc_analysis
 
 # Build the quality report tsv files (in qc_reports directory) 
-snakemake -s qc/Snakefile all_qc_reports
+snakemake -s workflow/Snakefile all_qc_reports
 ```
+
+There is also an  `all` rule that executes the three rules noted above in one `snakemake` command:
+```
+# Build all the reports and plots
+snakemake -s workflow/Snakefile all
+```
+
+You can also build a single PDF summary with the main plots and results. This requires a working 
+installation of pdflatex, which is not provided through the environment
+
+```
+snakemake -s workflow/Snakefile all_final_report
+```
+
 
 ## Output
 
@@ -189,23 +201,30 @@ qc_reports/run_name_mixture_report.tsv
 ```
 
 ## Variant Annotation
-SNVs and Indels are annotated using ANNOVAR.  A custom `avGene` file was
-developed by the ANNOVAR authors with details provided on their website:
-`https://doc-openbio.readthedocs.io/projects/annovar/en/latest/`
+SNVs and Indels are annotated using SNPEff.  The `MN908947.3` SNPEff database
+is part of the standard set of genomes.
 
-ANNOVAR requires seperate installation and `table_annovar.pl` must be in the
-$PATH for proper execution.  The `Snakefile` supports the conversion of
-`.variants.tsv` and `.pass.vcf.gz` files for the Illumina and ONT platforms
-respectively.
+Currently the database is not available for download and requires building.  To
+download the NCBI gene file and build the database, run the following:
 
 ```
-snakemake -s qc/Snakefile --cores 2 annotate_variants
+snakemake -s workflow/Snakefile --cores 1 build_snpeff_db
 ```
 
-Variant annotation output can be found in `qc_annotation`.
+Once the database has been built, the workflow can be run using:
+
+```
+snakemake -s workflow/Snakefile --cores 2 all_qc_annotation
+```
+
+Variant annotation output can be found in `qc_annotation` and the recurrent
+amino acid change heatmap can be found in `plots/<prefix>_aa_mutation_heatmap.pdf`.
 
 
 ## Credit and Acknowledgements
 
-The tree-with-SNPs plot was inspired by a plot shared by Mads Albertsen.
+* The tree-with-SNPs plot was inspired by a plot shared by Mads Albertsen.
+
+* The script to convert `variants.tsv` files into `.vcf` files was obtained
+  from: `https://github.com/nf-core/viralrecon/blob/dev/bin/ivar_variants_to_vcf.py`
 
